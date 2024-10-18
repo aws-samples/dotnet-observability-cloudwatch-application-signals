@@ -1,0 +1,22 @@
+#See https://aka.ms/containerfastmode to understand how Visual Studio uses this Dockerfile to build your images for faster debugging.
+
+FROM mcr.microsoft.com/dotnet/aspnet:8.0.3-bookworm-slim-arm64v8 AS base
+WORKDIR /app
+EXPOSE 80
+EXPOSE 443
+
+FROM mcr.microsoft.com/dotnet/sdk:8.0.203-bookworm-slim-arm64v8 AS build
+WORKDIR "/src/Simple.DeliveryApi"
+COPY "Simple.DeliveryApi.csproj" .
+RUN dotnet restore "Simple.DeliveryApi.csproj"
+COPY . .
+RUN dotnet build "Simple.DeliveryApi.csproj" -c Release --no-restore
+
+FROM build AS publish
+RUN dotnet publish "Simple.DeliveryApi.csproj" -c Release -o /app/publish --no-build
+
+FROM base AS final
+WORKDIR /app
+COPY --chown=$APP_UID:$APP_UID --from=publish /app/publish .
+USER $APP_UID
+ENTRYPOINT ["dotnet", "Simple.DeliveryApi.dll"]

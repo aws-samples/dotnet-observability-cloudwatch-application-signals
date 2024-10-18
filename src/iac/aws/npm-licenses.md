@@ -1,0 +1,14 @@
+| Name                           | Author                                                                                 | License type | Link                                                         | Installed version |
+| :----------------------------- | :------------------------------------------------------------------------------------- | :----------- | :----------------------------------------------------------- | :---------------- |
+| @aws-quickstart/eks-blueprints | n/a                                                                                    | Apache-2.0   | git+https://github.com/aws-quickstart/cdk-eks-blueprints.git | 1.15.1            |
+| aws-cdk-lib                    | Amazon Web Services https://aws.amazon.com                                             | Apache-2.0   | git+https://github.com/aws/aws-cdk.git                       | 2.147.3           |
+| constructs                     | Amazon Web Services aws-cdk-dev@amazon.com                                             | Apache-2.0   | git+https://github.com/aws/constructs.git                    | 10.3.0            |
+| source-map-support             | n/a                                                                                    | MIT          | git+https://github.com/evanw/node-source-map-support.git     | 0.5.21            |
+| @types/jest                    | n/a                                                                                    | MIT          | https://github.com/DefinitelyTyped/DefinitelyTyped.git       | 29.5.13           |
+| @types/node                    | n/a                                                                                    | MIT          | https://github.com/DefinitelyTyped/DefinitelyTyped.git       | 22.5.4            |
+| aws-cdk                        | Amazon Web Services https://aws.amazon.com                                             | Apache-2.0   | git+https://github.com/aws/aws-cdk.git                       | 2.147.3           |
+| jest                           | n/a                                                                                    | MIT          | git+https://github.com/jestjs/jest.git                       | 29.7.0            |
+| ts-jest                        | Kulshekhar Kabra <kulshekhar@users.noreply.github.com> (https://github.com/kulshekhar) | MIT          | git+https://github.com/kulshekhar/ts-jest.git                | 29.2.5            |
+| ts-node                        | Blake Embrey hello@blakeembrey.com http://blakeembrey.me                               | MIT          | git://github.com/TypeStrong/ts-node.git                      | 10.9.2            |
+| typescript                     | Microsoft Corp.                                                                        | Apache-2.0   | git+https://github.com/microsoft/TypeScript.git              | 5.6.2             |
+
