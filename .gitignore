@@ -483,6 +483,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 !./src/iac/aws/canary/nodejs/node_modules/**
+!.src/iac/aws/bin/**
 
 *.js
 !jest.config.js

@@ -1,5 +1,11 @@
 # Code snippet
 
+## Git clone
+
+```sh
+git clone https://github.com/aws-samples/dotnet-observability-cloudwatch-application-signals.git
+```
+
 ## EKS Cluster with Add-Ons
 
 ```ts
@@ -22,6 +28,20 @@ export class EksBlueprintStack {
     ....
   }
 }
+```
+
+## Deploy EKS Cluster
+
+```sh
+cd src/iac/aws
+npm ci
+cdk deploy --require-approval never demo-app-stack eks-blueprint-demo
+```
+
+## Get Kubeconfig
+
+```sh
+eval $(aws cloudformation describe-stacks  --stack-name eks-blueprint-demo --output text --query 'Stacks[0].Outputs[?contains(OutputKey,`eksblueprintdemoConfigCommand`)].OutputValue  | [0]')
 ```
 
 ## Kubernetes Resources using CDK8s
