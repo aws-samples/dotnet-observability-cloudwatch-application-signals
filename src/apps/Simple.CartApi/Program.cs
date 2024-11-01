@@ -41,9 +41,36 @@ if (app.Environment.IsDevelopment())
 
 app.MapGet("/cart/{id:guid}", async (Guid id,
     IAmazonDynamoDB dynamoDbClient,
-    IHttpClientFactory httpClientFactory) =>
+    IHttpClientFactory httpClientFactory,
+    ILogger<Program> logger) =>
 {
     //using id get cart from dynamodb
+    var dynamoDBContext = new DynamoDBContext(dynamoDbClient);
+    Cart? cart = null;
+    try
+    {
+        cart = await dynamoDBContext.LoadAsync<Cart>(id);
+    }
+    catch (Exception ex)
+    {
+        var msg = "Fail to persist in DynamoDB Table";
+        logger.LogError(ex, msg);
+        return Results.Problem(msg);
+    }
+
+    //Get delivery details from backend
+    var httpClient = httpClientFactory.CreateClient("BackendAPIClient");
+    cart.DeliveryStatus = await httpClient.GetFromJsonAsync<DeliveryStatus>($"/deliver/cart/{id}");
+
+    return Results.Ok(cart);
+});
+
+/// <summary>
+/// List cart items
+/// </summary>
+/// <returns></returns>
+app.MapGet("/cart/{id:guid}/items", async (Guid id, IAmazonDynamoDB dynamoDbClient) =>
+{
     var dynamoDBContext = new DynamoDBContext(dynamoDbClient);
     Cart? cart = null;
     try
@@ -57,19 +84,24 @@ app.MapGet("/cart/{id:guid}", async (Guid id,
 
     if (cart == null)
     {
-        var cartItem = MockedBookCatalog.MockBooks()
+        return Results.Ok(MockedBookCatalog.MockBooks()
             .Select(book => new CartItem(Guid.NewGuid(), book.Title, Random.Shared.Next(10, 20), 1, book))
-            .ToList();
-
-        cart = new Cart { Id = id, Items = cartItem };
-
-        await dynamoDBContext.SaveAsync(cart);
+            .ToList());
     }
 
-    //Get delivery details from backend
-    var httpClient = httpClientFactory.CreateClient("BackendAPIClient");
-    cart.DeliveryStatus = await httpClient.GetFromJsonAsync<DeliveryStatus>($"/deliver/cart/{id}");
+    return Results.Ok(cart.Items);
+});
 
+/// <summary>
+/// Add Cart
+/// </summary>
+/// <param name="cart"></param>
+/// <param name="dynamoDbClient"></param>
+/// <returns></returns>
+app.MapPost("/cart", async (Cart cart, IAmazonDynamoDB dynamoDbClient) =>
+{
+    var dynamoDBContext = new DynamoDBContext(dynamoDbClient);
+    await dynamoDBContext.SaveAsync(cart);
     return Results.Ok(cart);
 });
 

@@ -21,6 +21,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+/// <summary>
+/// Mock delivery data
+/// </summary>
+/// <value></value>
 app.MapGet("/deliver/cart/{id:Guid}", (Guid id, ILogger<Program> logger) =>
 {
     var result = new DeliveryStatus(

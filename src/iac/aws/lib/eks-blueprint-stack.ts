@@ -32,7 +32,7 @@ export class EksBlueprintStack {
       stack.getClusterInfo().cluster,
       "cart-app-service-account",
       "default",
-      iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonDynamoDBFullAccess")
+      iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonDynamoDBFullAccess") //This is for demo, you should limit access in production environment..
     );
   }
 }
