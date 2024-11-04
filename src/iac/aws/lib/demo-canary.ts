@@ -1,6 +1,7 @@
 import { Construct } from "constructs";
 import * as cdk from "aws-cdk-lib";
 import * as synthetics from "aws-cdk-lib/aws-synthetics";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as cw from "aws-cdk-lib/aws-cloudwatch";
 import { Duration } from "aws-cdk-lib";
 import path = require("path");
@@ -28,6 +29,19 @@ export class DemoCanaryStack extends cdk.Stack {
         EKS_URL_BASE: process.env.EKS_URL_BASE ?? "",
       },
     });
+
+    // let rawL1 = canary.node.defaultChild as synthetics.CfnCanary;
+    // rawL1.runConfig = {
+    //   ...rawL1.runConfig,
+    //   activeTracing: true,
+    // };
+
+    // //add X-Ray deamon managed role
+    // canary.role.addManagedPolicy(
+    //   cdk.aws_iam.ManagedPolicy.fromAwsManagedPolicyName(
+    //     "AWSXRayDaemonWriteAccess"
+    //   )
+    // );
 
     const alarm = new cw.Alarm(this, "cw-alarm", {
       metric: canary.metricSuccessPercent(),
