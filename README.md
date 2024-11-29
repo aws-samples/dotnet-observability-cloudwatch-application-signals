@@ -1,11 +1,16 @@
-## My Project
+# Source Code for Blog post: .NET observability with Amazon CloudWatch Application Signals
 
-TODO: Fill this README out!
+This repository contents the sources code for the AWS Blog post: [.NET observability with Amazon CloudWatch Application Signals](https://aws.amazon.com/blogs/modernizing-with-aws/dotnet-observability-cloudwatch-application-signals/)
 
-Be sure to:
+The blog post provides a detailed walkthrough on integrating Amazon CloudWatch Application Signals with .NET applications deployed on an Amazon Elastic Kubernetes Service (EKS) cluster. The solution uses CloudWatch Observability Add-On for EKS to enable the .NET applications to emit telemetry signals using OpenTelemetry automatically.
 
-* Change the title in this README
-* Edit your repository description on GitHub
+## Authors
+
+@ulili5
+
+@AsakerMohd
+
+@awsmcrod
 
 ## Security
 
@@ -14,4 +19,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This library is licensed under the MIT-0 License. See the LICENSE file.
-
