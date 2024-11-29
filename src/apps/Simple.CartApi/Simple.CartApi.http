@@ -1,0 +1,6 @@
+@Simple.CartApi_HostAddress = http://localhost:5177
+
+GET {{Simple.CartApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
