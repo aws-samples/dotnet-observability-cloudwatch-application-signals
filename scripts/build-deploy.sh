@@ -138,9 +138,6 @@ spec:
     metadata:
       labels:
         app: dotnet-delivery-api
-      annotations:
-        instrumentation.opentelemetry.io/inject-dotnet: "true"
-        instrumentation.opentelemetry.io/otel-dotnet-auto-runtime: "linux-musl-x64"
     spec:
       serviceAccountName: ${DELIVERY_SERVICE_ACCOUNT}
       containers:
@@ -191,9 +188,6 @@ spec:
     metadata:
       labels:
         app: dotnet-cart-api
-      annotations:
-        instrumentation.opentelemetry.io/inject-dotnet: "true"
-        instrumentation.opentelemetry.io/otel-dotnet-auto-runtime: "linux-musl-x64"
     spec:
       serviceAccountName: ${CART_SERVICE_ACCOUNT}
       containers:
