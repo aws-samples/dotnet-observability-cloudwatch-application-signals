@@ -493,3 +493,10 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Temp deployment files created through shell script
+cluster.yaml
+kubernetes/
+cart-api-dynamodb-policy.json
+delivery-api-policy.json
+.cluster-config/
