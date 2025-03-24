@@ -1,26 +1,40 @@
 #!/bin/bash
+set -eo pipefail
 
-# Colors for console output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Log levels and colors
+ERROR_COLOR='\033[0;31m'
+SUCCESS_COLOR='\033[0;32m'
+WARNING_COLOR='\033[1;33m'
+INFO_COLOR='\033[0;34m'
+DEBUG_COLOR='\033[0;37m'
+NO_COLOR='\033[0m'
 
 # Global variables
 declare AWS_ACCOUNT_ID
 declare AWS_REGION
 declare SKIP_BUILD
 
-# Print colorized message
-print_message() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
+# Logging function
+log() {
+    local level=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+    local message="$2"
+    local color
+    
+    case $level in
+        ERROR)   color=$ERROR_COLOR ;;
+        SUCCESS) color=$SUCCESS_COLOR ;;
+        WARNING) color=$WARNING_COLOR ;;
+        INFO)    color=$INFO_COLOR ;;
+        DEBUG)   color=$DEBUG_COLOR ;;
+        *)       color=$INFO_COLOR ;;
+    esac
+    
+    echo -e "${color}${level}: ${message}${NO_COLOR}"
 }
 
-# Handle errors
+# Error handling
 handle_error() {
-    print_message "$RED" "$1"
+    log "ERROR" "$1"
     exit 1
 }
 
@@ -30,15 +44,15 @@ load_configuration() {
         handle_error "Cluster configuration not found. Please run create-eks-env.sh first."
     fi
 
-    print_message "$YELLOW" "Loading configuration..."
+    log "INFO" "Loading configuration..."
     
     # Extract configuration values using the correct JSON paths
-    CLUSTER_NAME=$(jq -r '.cluster.name' .cluster-config/cluster-resources.json)
-    AWS_REGION=$(jq -r '.cluster.region' .cluster-config/cluster-resources.json)
-    AWS_ACCOUNT_ID=$(jq -r '.cluster.account_id' .cluster-config/cluster-resources.json)
-    DYNAMODB_TABLE_NAME=$(jq -r '.resources.dynamodb_table' .cluster-config/cluster-resources.json)
-    CART_SERVICE_ACCOUNT=$(jq -r '.resources.cart_service_account' .cluster-config/cluster-resources.json)
-    DELIVERY_SERVICE_ACCOUNT=$(jq -r '.resources.delivery_service_account' .cluster-config/cluster-resources.json)
+    CLUSTER_NAME=$(jq -r '.cluster.name // empty' .cluster-config/cluster-resources.json)
+    AWS_REGION=$(jq -r '.cluster.region // empty' .cluster-config/cluster-resources.json)
+    AWS_ACCOUNT_ID=$(jq -r '.cluster.account_id // empty' .cluster-config/cluster-resources.json)
+    DYNAMODB_TABLE_NAME=$(jq -r '.resources.dynamodb_table // empty' .cluster-config/cluster-resources.json)
+    CART_SERVICE_ACCOUNT=$(jq -r '.resources.cart_service_account // empty' .cluster-config/cluster-resources.json)
+    DELIVERY_SERVICE_ACCOUNT=$(jq -r '.resources.delivery_service_account // empty' .cluster-config/cluster-resources.json)
 
     # Validate configuration
     if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" = "null" ] || \
@@ -48,27 +62,31 @@ load_configuration() {
         handle_error "Invalid configuration. Please run create-eks-env.sh to recreate the environment."
     fi
 
-    print_message "$GREEN" "Configuration loaded successfully"
-    print_message "$GREEN" "Cluster Name: $CLUSTER_NAME"
-    print_message "$GREEN" "AWS Region: $AWS_REGION"
-    print_message "$GREEN" "DynamoDB Table: $DYNAMODB_TABLE_NAME"
+    log "SUCCESS" "Configuration loaded successfully"
+    log "INFO" "Cluster Name: $CLUSTER_NAME"
+    log "INFO" "AWS Region: $AWS_REGION"
+    log "INFO" "DynamoDB Table: $DYNAMODB_TABLE_NAME"
 }
 
 # Create ECR repositories
 create_ecr_repos() {
-    print_message "$YELLOW" "Creating ECR repositories..."
+    log "INFO" "Creating ECR repositories..."
     
     for repo in "simple-cart-api" "simple-delivery-api"; do
         if ! aws ecr describe-repositories --repository-names "$repo" --region "$AWS_REGION" --no-cli-pager 2>/dev/null; then
             aws ecr create-repository --repository-name "$repo" --region "$AWS_REGION" --no-cli-pager
+            log "SUCCESS" "Created ECR repository: $repo"
+        else
+            log "INFO" "ECR repository already exists: $repo"
         fi
     done
 }
 
 # Log in to ECR
 ecr_login() {
-    print_message "$YELLOW" "Logging in to ECR..."
+    log "INFO" "Logging in to ECR..."
     aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+    log "SUCCESS" "Successfully logged in to ECR"
 }
 
 # Build and push Docker images
@@ -76,11 +94,11 @@ build_and_push_images() {
     local ecr_url="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
     # Clean Docker system
-    print_message "$YELLOW" "Cleaning Docker system..."
+    log "INFO" "Cleaning Docker system..."
     docker system prune -f
 
     # Build and push Cart API
-    print_message "$YELLOW" "Building and pushing Cart API..."
+    log "INFO" "Building and pushing Cart API..."
     cd src/apps/Simple.CartApi
     if ! docker build --no-cache --platform linux/amd64 -t simple-cart-api:latest .; then
         cd ../../..
@@ -89,9 +107,10 @@ build_and_push_images() {
     docker tag simple-cart-api:latest $ecr_url/simple-cart-api:latest
     docker push $ecr_url/simple-cart-api:latest
     cd ../../..
+    log "SUCCESS" "Cart API image pushed successfully"
 
     # Build and push Delivery API
-    print_message "$YELLOW" "Building and pushing Delivery API..."
+    log "INFO" "Building and pushing Delivery API..."
     cd src/apps/Simple.DeliveryApi
     if ! docker build --no-cache --platform linux/amd64 -t simple-delivery-api:latest .; then
         cd ../../..
@@ -100,11 +119,12 @@ build_and_push_images() {
     docker tag simple-delivery-api:latest $ecr_url/simple-delivery-api:latest
     docker push $ecr_url/simple-delivery-api:latest
     cd ../../..
+    log "SUCCESS" "Delivery API image pushed successfully"
 }
 
 # Verify service account exists
 verify_service_accounts() {
-    print_message "$YELLOW" "Verifying service accounts..."
+    log "INFO" "Verifying service accounts..."
     
     if ! kubectl get serviceaccount ${CART_SERVICE_ACCOUNT} &>/dev/null; then
         handle_error "Cart API service account not found. Please run create-eks-env.sh first."
@@ -114,11 +134,12 @@ verify_service_accounts() {
         handle_error "Delivery API service account not found. Please run create-eks-env.sh first."
     fi
     
-    print_message "$GREEN" "Service accounts verified successfully"
+    log "SUCCESS" "Service accounts verified successfully"
 }
+
 # Create Kubernetes deployment files
 create_k8s_files() {
-    print_message "$YELLOW" "Creating Kubernetes deployment files..."
+    log "INFO" "Creating Kubernetes deployment files..."
     mkdir -p kubernetes
 
     # Create Delivery API deployment
@@ -290,22 +311,26 @@ spec:
             port:
               number: 8080
 EOF
+
+    log "SUCCESS" "Kubernetes deployment files created"
 }
 
 # Restart deployments
 restart_deployments() {
-    print_message "$YELLOW" "Restarting deployments..."
+    log "INFO" "Restarting deployments..."
     
     kubectl rollout restart deployment dotnet-cart-api
     kubectl rollout restart deployment dotnet-delivery-api
     
     kubectl rollout status deployment dotnet-cart-api
     kubectl rollout status deployment dotnet-delivery-api
+    
+    log "SUCCESS" "Deployments restarted successfully"
 }
 
 # Deploy to Kubernetes
 deploy_to_k8s() {
-    print_message "$YELLOW" "Deploying to Kubernetes..."
+    log "INFO" "Deploying to Kubernetes..."
     
     kubectl apply -f kubernetes/cart-deployment.yaml
     kubectl apply -f kubernetes/delivery-deployment.yaml
@@ -314,11 +339,12 @@ deploy_to_k8s() {
     kubectl apply -f kubernetes/ingress.yaml
     
     restart_deployments
+    log "SUCCESS" "Kubernetes deployments completed"
 }
 
 # Verify deployment
 verify_deployment() {
-    print_message "$YELLOW" "Verifying deployment..."
+    log "INFO" "Verifying deployment..."
     local max_attempts=30
     local wait_seconds=10
     local deployments=("dotnet-cart-api" "dotnet-delivery-api")
@@ -333,13 +359,13 @@ verify_deployment() {
             
             if [ "$ready_replicas" != "$total_replicas" ]; then
                 all_ready=false
-                print_message "$YELLOW" "Waiting for $deployment to be ready ($ready_replicas/$total_replicas)..."
+                log "INFO" "Waiting for $deployment to be ready ($ready_replicas/$total_replicas)..."
                 break
             fi
         done
         
         if $all_ready; then
-            print_message "$GREEN" "All deployments are ready!"
+            log "SUCCESS" "All deployments are ready!"
             break
         fi
         
@@ -350,22 +376,24 @@ verify_deployment() {
         sleep $wait_seconds
     done
 
-    print_message "$GREEN" "Deployment verification completed successfully"
+    log "SUCCESS" "Deployment verification completed"
 }
 
 # Print deployment summary
 print_deployment_summary() {
-    print_message "$YELLOW" "Getting deployment summary..."
+    log "INFO" "Getting deployment summary..."
     
     # Get ALB endpoint
     ALB_ENDPOINT=$(kubectl get ingress apps-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     
     # Print summary
-    echo -e "\n${GREEN}Deployment Summary:${NC}"
-    echo -e "${GREEN}Application URL: ${NC}http://${ALB_ENDPOINT}"
-    echo -e "${GREEN}Cart API Path: ${NC}/apps/cart"
-    echo -e "${GREEN}Delivery API Path: ${NC}/apps/delivery"
-    echo -e "\n${YELLOW}Note: It may take a few minutes for the ALB to become available${NC}"
+    log "SUCCESS" "\n====================================="
+    log "SUCCESS" "Deployment Summary"
+    log "SUCCESS" "====================================="
+    log "INFO" "Application URL: http://${ALB_ENDPOINT}"
+    log "INFO" "Cart API Path: /apps/cart"
+    log "INFO" "Delivery API Path: /apps/delivery"
+    log "WARNING" "Note: It may take a few minutes for the ALB to become available"
 }
 
 # Validate AWS region
@@ -377,15 +405,21 @@ validate_aws_region() {
 
 # Check prerequisites
 check_prerequisites() {
-    print_message "$YELLOW" "Checking prerequisites..."
+    log "INFO" "Checking prerequisites..."
     
     # Check required commands
     local required_commands=("aws" "kubectl" "docker" "jq")
+    local missing_commands=()
+
     for cmd in "${required_commands[@]}"; do
         if ! command -v "$cmd" &>/dev/null; then
-            handle_error "$cmd is required but not installed"
+            missing_commands+=("$cmd")
         fi
     done
+
+    if [ ${#missing_commands[@]} -ne 0 ]; then
+        handle_error "Required tools not installed: ${missing_commands[*]}"
+    fi
     
     # Check AWS CLI configuration
     if ! aws sts get-caller-identity &>/dev/null; then
@@ -406,6 +440,8 @@ check_prerequisites() {
     if ! kubectl get deployment -n kube-system aws-load-balancer-controller &>/dev/null; then
         handle_error "AWS Load Balancer Controller is not installed. Please install it first."
     fi
+
+    log "SUCCESS" "Prerequisites check passed"
 }
 
 # Parse command line arguments
@@ -421,10 +457,10 @@ parse_arguments() {
                 shift
                 ;;
             --help)
-                echo "Usage: $0 [--region AWS_REGION] [--skip-build]"
-                echo "  --region     : AWS region (default: from cluster config)"
-                echo "  --skip-build : Skip building and pushing Docker images"
-                echo "  --help       : Show this help message"
+                log "INFO" "Usage: $0 [--region AWS_REGION] [--skip-build]"
+                log "INFO" "  --region     : AWS region (default: from cluster config)"
+                log "INFO" "  --skip-build : Skip building and pushing Docker images"
+                log "INFO" "  --help       : Show this help message"
                 exit 0
                 ;;
             *)
@@ -443,7 +479,7 @@ deploy_applications() {
     if [ ! -z "$1" ] && [ "$AWS_REGION" != "$1" ]; then
         AWS_REGION="$1"
         validate_aws_region
-        print_message "$YELLOW" "Using provided AWS region: $AWS_REGION"
+        log "INFO" "Using provided AWS region: $AWS_REGION"
     fi
     
     verify_service_accounts
@@ -453,7 +489,7 @@ deploy_applications() {
         ecr_login
         build_and_push_images
     else
-        print_message "$YELLOW" "Skipping build and push of Docker images"
+        log "INFO" "Skipping build and push of Docker images"
     fi
     
     create_k8s_files
@@ -465,9 +501,9 @@ deploy_applications() {
 # Cleanup handler
 cleanup() {
     if [ $? -ne 0 ]; then
-        print_message "$RED" "Deployment failed!"
+        log "ERROR" "Deployment failed!"
         if [ ! -z "${AWS_REGION}" ]; then
-            print_message "$YELLOW" "You may want to run cleanup-eks-env.sh to clean up resources"
+            log "WARNING" "You may want to run cleanup-eks-env.sh to clean up resources"
         fi
     fi
 }
@@ -481,4 +517,3 @@ main() {
 
 # Run main function
 main "$@"
-

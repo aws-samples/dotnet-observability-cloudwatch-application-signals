@@ -500,3 +500,4 @@ kubernetes/
 cart-api-dynamodb-policy.json
 delivery-api-policy.json
 .cluster-config/
+scripts_playground/

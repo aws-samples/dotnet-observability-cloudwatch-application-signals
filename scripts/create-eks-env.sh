@@ -1,28 +1,44 @@
 #!/bin/bash
+set -eo pipefail
 
-set -e
+# Log levels and colors
+ERROR_COLOR='\033[0;31m'
+SUCCESS_COLOR='\033[0;32m'
+WARNING_COLOR='\033[1;33m'
+INFO_COLOR='\033[0;34m'
+DEBUG_COLOR='\033[0;37m'
+NO_COLOR='\033[0m'
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-# Print with color
-print_message() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
+# Logging function
+log() {
+    local level=$1
+    local message="$2"
+    local color
+    
+    # Convert level to uppercase using tr instead of ${1^^}
+    level=$(echo "$level" | tr '[:lower:]' '[:upper:]')
+    
+    case $level in
+        ERROR)   color=$ERROR_COLOR ;;
+        SUCCESS) color=$SUCCESS_COLOR ;;
+        WARNING) color=$WARNING_COLOR ;;
+        INFO)    color=$INFO_COLOR ;;
+        DEBUG)   color=$DEBUG_COLOR ;;
+        *)       color=$INFO_COLOR ;;
+    esac
+    
+    echo -e "${color}${level}: ${message}${NO_COLOR}"
 }
+
 
 # Error handling
 handle_error() {
-    print_message $RED "Error occurred on line $1"
-    print_message $RED "Command: $2"
+    log "ERROR" "Error occurred on line $1"
+    log "ERROR" "Command: $2"
     exit 1
 }
 
-trap 'handle_error ${LINENO} "$BASH_COMMAND"' ERR
+trap 'handle_error ${LINENO} "${BASH_COMMAND}"' ERR
 
 # Generate common tags
 get_common_tags() {
@@ -47,7 +63,7 @@ generate_unique_id() {
         attempt=$((attempt + 1))
     done
 
-    print_message $RED "Failed to generate valid unique ID"
+    log "ERROR" "Failed to generate valid unique ID"
     exit 1
 }
 
@@ -63,12 +79,12 @@ check_prerequisites() {
     done
 
     if [ ${#missing_tools[@]} -ne 0 ]; then
-        print_message $RED "Missing required tools: ${missing_tools[*]}"
+        log "ERROR" "Missing required tools: ${missing_tools[*]}"
         exit 1
     fi
 
     if ! aws sts get-caller-identity &>/dev/null; then
-        print_message $RED "AWS CLI is not configured"
+        log "ERROR" "AWS CLI is not configured"
         exit 1
     fi
 }
@@ -79,7 +95,7 @@ get_aws_details() {
     AWS_REGION=${AWS_REGION:-$(aws configure get region)}
     
     if [ -z "$AWS_REGION" ]; then
-        print_message $RED "AWS region is not configured"
+        log "ERROR" "AWS region is not configured"
         exit 1
     fi
 }
@@ -87,10 +103,9 @@ get_aws_details() {
 # Setup resource names
 setup_resource_names() {
     ID=$(generate_unique_id)
-    print_message $YELLOW "Generated ID: $ID"
+    log "INFO" "Generated ID: $ID"
     
     DYNAMODB_TABLE_NAME="simple-cart-catalog"
-    CW_AGENT_ROLE_NAME="${ID}-cw"
     ORDER_API_POLICY_NAME="${ID}-policy"
     CART_API_POLICY_NAME="${ID}-cart-policy"
     CART_SERVICE_ACCOUNT_NAME="${ID}-cart-sa"
@@ -106,7 +121,7 @@ get_cluster_name() {
     CLUSTER_NAME=${CLUSTER_NAME:-$DEFAULT_CLUSTER_NAME}
     
     if ! [[ $CLUSTER_NAME =~ ^[a-zA-Z][a-zA-Z0-9-]*[a-zA-Z0-9]$ && ${#CLUSTER_NAME} -le 100 ]]; then
-        print_message $RED "Invalid cluster name format"
+        log "ERROR" "Invalid cluster name format"
         exit 1
     fi
 }
@@ -114,11 +129,11 @@ get_cluster_name() {
 # Create EKS cluster
 create_eks_cluster() {
     if aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} &>/dev/null; then
-        print_message $YELLOW "Cluster ${CLUSTER_NAME} already exists"
+        log "WARNING" "Cluster ${CLUSTER_NAME} already exists"
         return 0
     fi
     
-    print_message $YELLOW "Creating EKS cluster ${CLUSTER_NAME}..."
+    log "INFO" "Creating EKS cluster ${CLUSTER_NAME}..."
     
     cat <<EOF > cluster.yaml
 apiVersion: eksctl.io/v1alpha5
@@ -135,14 +150,6 @@ metadata:
 
 iam:
   withOIDC: true
-  serviceAccounts:
-    - metadata:
-        name: cloudwatch-agent
-        namespace: amazon-cloudwatch
-      roleName: ${CW_AGENT_ROLE_NAME}
-      attachPolicyARNs:
-        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
-      tags: *tags
 
 managedNodeGroups:
   - name: ng-1
@@ -156,7 +163,6 @@ managedNodeGroups:
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
 
 addons:
   - name: vpc-cni
@@ -164,8 +170,6 @@ addons:
   - name: coredns
     version: latest
   - name: kube-proxy
-    version: latest
-  - name: amazon-cloudwatch-observability
     version: latest
 EOF
 
@@ -176,11 +180,11 @@ EOF
 # Create DynamoDB table
 create_dynamodb_table() {
     if aws dynamodb describe-table --table-name ${DYNAMODB_TABLE_NAME} --region ${AWS_REGION} &>/dev/null; then
-        print_message $YELLOW "DynamoDB table ${DYNAMODB_TABLE_NAME} already exists"
+        log "WARNING" "DynamoDB table ${DYNAMODB_TABLE_NAME} already exists"
         return 0
     fi
 
-    print_message $YELLOW "Creating DynamoDB table ${DYNAMODB_TABLE_NAME}..."
+    log "INFO" "Creating DynamoDB table ${DYNAMODB_TABLE_NAME}..."
     local common_tags=$(get_common_tags)
 
     aws dynamodb create-table \
@@ -189,16 +193,14 @@ create_dynamodb_table() {
         --key-schema AttributeName=Id,KeyType=HASH \
         --provisioned-throughput ReadCapacityUnits=1,WriteCapacityUnits=1 \
         --tags $common_tags \
-        --region ${AWS_REGION} \
-        
+        --region ${AWS_REGION}
 
-    #aws dynamodb wait table-exists --table-name ${DYNAMODB_TABLE_NAME} --region ${AWS_REGION}
+    aws dynamodb wait table-exists --table-name ${DYNAMODB_TABLE_NAME} --region ${AWS_REGION}
 }
 
 # Create IAM policies and service accounts
-# Create IAM policies and service accounts
 create_iam_resources() {
-    print_message $YELLOW "Creating IAM resources..."
+    log "INFO" "Creating IAM resources..."
     local common_tags=$(get_common_tags)
 
     # Create Cart API DynamoDB policy
@@ -244,7 +246,7 @@ EOF
 
     # Create or update Cart API policy
     if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CART_API_POLICY_NAME}" 2>/dev/null; then
-        print_message $YELLOW "Updating existing policy ${CART_API_POLICY_NAME}"
+        log "INFO" "Updating existing policy ${CART_API_POLICY_NAME}"
         POLICY_VERSION=$(aws iam create-policy-version \
             --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CART_API_POLICY_NAME}" \
             --policy-document file://cart-api-dynamodb-policy.json \
@@ -253,7 +255,7 @@ EOF
             --output text)
         CART_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${CART_API_POLICY_NAME}"
     else
-        print_message $YELLOW "Creating new policy ${CART_API_POLICY_NAME}"
+        log "INFO" "Creating new policy ${CART_API_POLICY_NAME}"
         CART_POLICY_ARN=$(aws iam create-policy \
             --policy-name "${CART_API_POLICY_NAME}" \
             --policy-document file://cart-api-dynamodb-policy.json \
@@ -265,7 +267,7 @@ EOF
     # Create or update Delivery API policy
     DELIVERY_API_POLICY_NAME="${ID}-delivery-policy"
     if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${DELIVERY_API_POLICY_NAME}" 2>/dev/null; then
-        print_message $YELLOW "Updating existing policy ${DELIVERY_API_POLICY_NAME}"
+        log "INFO" "Updating existing policy ${DELIVERY_API_POLICY_NAME}"
         POLICY_VERSION=$(aws iam create-policy-version \
             --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${DELIVERY_API_POLICY_NAME}" \
             --policy-document file://delivery-api-policy.json \
@@ -274,7 +276,7 @@ EOF
             --output text)
         DELIVERY_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${DELIVERY_API_POLICY_NAME}"
     else
-        print_message $YELLOW "Creating new policy ${DELIVERY_API_POLICY_NAME}"
+        log "INFO" "Creating new policy ${DELIVERY_API_POLICY_NAME}"
         DELIVERY_POLICY_ARN=$(aws iam create-policy \
             --policy-name "${DELIVERY_API_POLICY_NAME}" \
             --policy-document file://delivery-api-policy.json \
@@ -283,14 +285,11 @@ EOF
             --output text)
     fi
 
-    print_message $GREEN "Cart API Policy ARN: $CART_POLICY_ARN"
-    print_message $GREEN "Delivery API Policy ARN: $DELIVERY_POLICY_ARN"
-
     # Create service accounts
-    print_message $YELLOW "Creating service accounts..."
+    log "INFO" "Creating service accounts..."
     
     # Cart API service account
-    print_message $YELLOW "Creating service account ${CART_SERVICE_ACCOUNT_NAME}"
+    log "INFO" "Creating service account ${CART_SERVICE_ACCOUNT_NAME}"
     kubectl delete serviceaccount ${CART_SERVICE_ACCOUNT_NAME} --ignore-not-found --namespace default
     
     eksctl create iamserviceaccount \
@@ -300,16 +299,16 @@ EOF
         --attach-policy-arn=${CART_POLICY_ARN} \
         --override-existing-serviceaccounts \
         --approve \
-        --region ${AWS_REGION} \
+        --region ${AWS_REGION}
 
     # Verify Cart API service account
     if ! kubectl get serviceaccount ${CART_SERVICE_ACCOUNT_NAME} --namespace default &>/dev/null; then
-        print_message $RED "Cart API service account creation failed"
+        log "ERROR" "Cart API service account creation failed"
         exit 1
     fi
     
     # Delivery API service account
-    print_message $YELLOW "Creating service account ${DELIVERY_SERVICE_ACCOUNT_NAME}"
+    log "INFO" "Creating service account ${DELIVERY_SERVICE_ACCOUNT_NAME}"
     kubectl delete serviceaccount ${DELIVERY_SERVICE_ACCOUNT_NAME} --ignore-not-found --namespace default
     
     eksctl create iamserviceaccount \
@@ -319,12 +318,20 @@ EOF
         --attach-policy-arn=${DELIVERY_POLICY_ARN} \
         --override-existing-serviceaccounts \
         --approve \
-        --region ${AWS_REGION} 
+        --region ${AWS_REGION}
+
+    # Verify Delivery API service account
+    if ! kubectl get serviceaccount ${DELIVERY_SERVICE_ACCOUNT_NAME} --namespace default &>/dev/null; then
+        log "ERROR" "Delivery API service account creation failed"
+        exit 1
+    fi
 
     rm -f cart-api-dynamodb-policy.json delivery-api-policy.json
 }
+
+# Setup EKS addons
 setup_eks_addons() {
-    print_message "$YELLOW" "Setting up EKS add-ons..."
+    log "INFO" "Setting up EKS add-ons..."
 
     # Create OIDC provider
     eksctl utils associate-iam-oidc-provider \
@@ -344,24 +351,23 @@ setup_eks_addons() {
     ALB_POLICY_ARN=""
 
     if aws iam get-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${ALB_POLICY_NAME}" &>/dev/null; then
-        print_message "$YELLOW" "ALB Controller policy already exists, using existing policy"
+        log "INFO" "ALB Controller policy already exists"
         ALB_POLICY_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${ALB_POLICY_NAME}"
     else
-        print_message "$YELLOW" "Creating ALB Controller policy..."
+        log "INFO" "Creating ALB Controller policy..."
         curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json
 
         ALB_POLICY_ARN=$(aws iam create-policy \
             --policy-name "${ALB_POLICY_NAME}" \
             --policy-document file://iam_policy.json \
             --query 'Policy.Arn' \
-            --output text \
-            --region ${AWS_REGION})
+            --output text)
 
         rm -f iam_policy.json
     fi
 
     # Create service account for ALB Controller
-    print_message "$YELLOW" "Creating service account for ALB Controller..."
+    log "INFO" "Creating service account for ALB Controller..."
     eksctl create iamserviceaccount \
         --cluster=${CLUSTER_NAME} \
         --namespace=kube-system \
@@ -371,54 +377,21 @@ setup_eks_addons() {
         --approve \
         --region ${AWS_REGION}
 
-    # Check if ALB Controller is already installed
+    # Install/upgrade AWS Load Balancer Controller
     if helm list -n kube-system | grep -q "aws-load-balancer-controller"; then
-        print_message "$YELLOW" "AWS Load Balancer Controller already installed, upgrading..."
+        log "INFO" "Upgrading AWS Load Balancer Controller..."
         helm upgrade aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${CLUSTER_NAME} \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller
     else
-        print_message "$YELLOW" "Installing AWS Load Balancer Controller..."
+        log "INFO" "Installing AWS Load Balancer Controller..."
         helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
             -n kube-system \
             --set clusterName=${CLUSTER_NAME} \
             --set serviceAccount.create=false \
             --set serviceAccount.name=aws-load-balancer-controller
-    fi
-
-    print_message "$GREEN" "EKS add-ons setup completed"
-}
-
-
-
-# Setup CloudWatch observability
-setup_cloudwatch() {
-    print_message $YELLOW "Setting up CloudWatch observability..."
-
-    eksctl utils associate-iam-oidc-provider \
-        --cluster ${CLUSTER_NAME} \
-        --approve \
-        --region ${AWS_REGION} || true
-
-    kubectl create namespace amazon-cloudwatch --dry-run=client -o yaml | kubectl apply -f -
-
-    if ! aws eks describe-addon \
-        --cluster-name ${CLUSTER_NAME} \
-        --addon-name amazon-cloudwatch-observability \
-        --region ${AWS_REGION} &>/dev/null; then
-        
-        aws eks create-addon \
-            --cluster-name ${CLUSTER_NAME} \
-            --addon-name amazon-cloudwatch-observability \
-            --region ${AWS_REGION}
-
-        # Wait for addon to be active
-        aws eks wait addon-active \
-            --cluster-name ${CLUSTER_NAME} \
-            --addon-name amazon-cloudwatch-observability \
-            --region ${AWS_REGION}
     fi
 }
 
@@ -440,14 +413,19 @@ save_config() {
         "service_account": "${SERVICE_ACCOUNT_NAME}",
         "cart_service_account": "${CART_SERVICE_ACCOUNT_NAME}",
         "delivery_service_account": "${DELIVERY_SERVICE_ACCOUNT_NAME}",
-        "cloudwatch_role": "${CW_AGENT_ROLE_NAME}",
         "iam_policy": {
-            "name": "${CART_API_POLICY_NAME}",
-            "arn": "${POLICY_ARN}"
+            "cart_policy": {
+                "name": "${CART_API_POLICY_NAME}",
+                "arn": "${CART_POLICY_ARN}"
+            },
+            "delivery_policy": {
+                "name": "${DELIVERY_API_POLICY_NAME}",
+                "arn": "${DELIVERY_POLICY_ARN}"
+            }
         },
         "alb_controller": {
-            "policy_name": "AWSLoadBalancerControllerIAMPolicy-${CLUSTER_NAME}",
-            "policy_arn": "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy-${CLUSTER_NAME}",
+            "policy_name": "${ALB_POLICY_NAME}",
+            "policy_arn": "${ALB_POLICY_ARN}",
             "service_account": "aws-load-balancer-controller",
             "namespace": "kube-system"
         },
@@ -463,41 +441,39 @@ save_config() {
     },
     "addons": {
         "aws_load_balancer_controller": "installed",
-        "cert_manager": "installed",
-        "cloudwatch_observability": "installed"
+        "cert_manager": "installed"
     }
 }
 EOF
 
     if ! jq '.' .cluster-config/cluster-resources.json >/dev/null 2>&1; then
-        print_message $RED "Invalid JSON configuration"
+        log "ERROR" "Invalid JSON configuration"
         exit 1
     fi
 
-    print_message $GREEN "Configuration saved to .cluster-config/cluster-resources.json"
+    log "SUCCESS" "Configuration saved successfully"
 }
-
 
 # Verify setup
 verify_setup() {
-    print_message $YELLOW "Verifying setup..."
+    log "INFO" "Verifying setup..."
     
     # Check nodes
     if ! kubectl get nodes &>/dev/null; then
-        print_message $RED "Failed to get cluster nodes"
+        log "ERROR" "Failed to get cluster nodes"
         exit 1
     fi
 
     # Check service accounts
     if ! kubectl get serviceaccount ${CART_SERVICE_ACCOUNT_NAME} --namespace default &>/dev/null; then
-        print_message $RED "Cart service account verification failed"
+        log "ERROR" "Cart service account verification failed"
         exit 1
     fi
 
     if ! kubectl get serviceaccount ${DELIVERY_SERVICE_ACCOUNT_NAME} --namespace default &>/dev/null; then
-        print_message $RED "Delivery service account verification failed"
+        log "ERROR" "Delivery service account verification failed"
         exit 1
-    fi  # Remove the extra }
+    fi
 
     # Check DynamoDB
     if ! aws dynamodb describe-table \
@@ -505,9 +481,17 @@ verify_setup() {
         --region ${AWS_REGION} \
         --query 'Table.TableStatus' \
         --output text &>/dev/null; then
-        print_message $RED "DynamoDB table verification failed"
+        log "ERROR" "DynamoDB table verification failed"
         exit 1
     fi
+
+    # Check ALB Controller
+    if ! kubectl get deployment -n kube-system aws-load-balancer-controller &>/dev/null; then
+        log "ERROR" "AWS Load Balancer Controller verification failed"
+        exit 1
+    fi
+
+    log "SUCCESS" "All components verified successfully"
 }
 
 # Parse arguments
@@ -517,7 +501,7 @@ parse_arguments() {
         case $key in
             --region)
                 if [ -z "$2" ]; then
-                    print_message $RED "Region value is required"
+                    log "ERROR" "Region value is required"
                     exit 1
                 fi
                 AWS_REGION="$2"
@@ -525,63 +509,53 @@ parse_arguments() {
                 shift
                 ;;
             --help)
-                print_message $GREEN "Usage: $0 --region <aws-region>"
-                print_message $GREEN "Example: $0 --region us-east-1"
+                log "INFO" "Usage: $0 --region <aws-region>"
+                log "INFO" "Example: $0 --region us-east-1"
                 exit 0
                 ;;
             *)
-                print_message $RED "Unknown option: $1"
-                print_message $YELLOW "Usage: $0 --region <aws-region>"
+                log "ERROR" "Unknown option: $1"
+                log "INFO" "Usage: $0 --region <aws-region>"
                 exit 1
                 ;;
         esac
     done
 
     if [ -z "$AWS_REGION" ]; then
-        print_message $RED "Region parameter is required"
-        print_message $YELLOW "Usage: $0 --region <aws-region>"
+        log "ERROR" "Region parameter is required"
+        log "INFO" "Usage: $0 --region <aws-region>"
         exit 1
     fi
 }
 
 # Print summary 
 print_summary() {
-    print_message $GREEN "\n========================================="
-    print_message $GREEN "Environment setup completed successfully!"
-    print_message $GREEN "========================================="
+    log "SUCCESS" "\n========================================="
+    log "SUCCESS" "Environment setup completed successfully!"
+    log "SUCCESS" "========================================="
     
-    print_message $GREEN "\nCluster Details:"
-    print_message $GREEN "  Name: ${CLUSTER_NAME}"
-    print_message $GREEN "  Region: ${AWS_REGION}"
-    print_message $GREEN "  Resource ID: ${ID}"
+    log "INFO" "\nCluster Details:"
+    log "INFO" "  Name: ${CLUSTER_NAME}"
+    log "INFO" "  Region: ${AWS_REGION}"
+    log "INFO" "  Resource ID: ${ID}"
     
-    print_message $GREEN "\nResources Created:"
-    print_message $GREEN "  - EKS Cluster"
-    print_message $GREEN "  - DynamoDB Table: ${DYNAMODB_TABLE_NAME}"
-    print_message $GREEN "  - IAM Policy: ${CART_API_POLICY_NAME}"
-    print_message $GREEN "  - Cart Service Account: ${CART_SERVICE_ACCOUNT_NAME}"
-    print_message $GREEN "  - Delivery Service Account: ${DELIVERY_SERVICE_ACCOUNT_NAME}"
-    print_message $GREEN "  - CloudWatch Agent Role: ${CW_AGENT_ROLE_NAME}"
-    print_message $GREEN "  - ALB Controller Policy: AWSLoadBalancerControllerIAMPolicy-${CLUSTER_NAME}"
-    print_message $GREEN "  - ALB Controller Service Account: aws-load-balancer-controller"
+    log "INFO" "\nResources Created:"
+    log "INFO" "  - EKS Cluster"
+    log "INFO" "  - DynamoDB Table: ${DYNAMODB_TABLE_NAME}"
+    log "INFO" "  - Cart API Policy: ${CART_API_POLICY_NAME}"
+    log "INFO" "  - Delivery API Policy: ${DELIVERY_API_POLICY_NAME}"
+    log "INFO" "  - Cart Service Account: ${CART_SERVICE_ACCOUNT_NAME}"
+    log "INFO" "  - Delivery Service Account: ${DELIVERY_SERVICE_ACCOUNT_NAME}"
+    log "INFO" "  - ALB Controller Setup"
+    log "INFO" "  - Cert Manager Installation"
     
-    print_message $GREEN "\nAdd-ons Installed:"
-    print_message $GREEN "  - AWS Load Balancer Controller"
-    print_message $GREEN "  - Cert Manager"
-    print_message $GREEN "  - CloudWatch Observability"
-    
-    print_message $GREEN "\nConfiguration saved to:"
-    print_message $GREEN "  .cluster-config/cluster-resources.json"
-    
-    print_message $YELLOW "\nNext Steps:"
-    print_message $YELLOW "Run the deployment script:"
-    print_message $YELLOW "   ./scripts/build-deploy.sh --region ${AWS_REGION}"
+    log "INFO" "\nConfiguration saved to:"
+    log "INFO" "  .cluster-config/cluster-resources.json"
 }
-
 
 # Main execution
 main() {
-    print_message $YELLOW "Starting environment setup..."
+    log "INFO" "Starting environment setup..."
     
     parse_arguments "$@"
     check_prerequisites
@@ -589,14 +563,13 @@ main() {
     setup_resource_names
     get_cluster_name
     
-    print_message $YELLOW "\nCreating resources..."
+    log "INFO" "\nCreating resources..."
     create_eks_cluster
     setup_eks_addons
     create_dynamodb_table
     create_iam_resources
-    setup_cloudwatch
     
-    print_message $YELLOW "\nFinalizing setup..."
+    log "INFO" "\nFinalizing setup..."
     verify_setup
     save_config
     print_summary

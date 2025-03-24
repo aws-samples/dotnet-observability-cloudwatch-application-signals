@@ -1,60 +1,113 @@
 #!/bin/bash
+set -eo pipefail
 
-set -e
+# Log levels and colors
+ERROR_COLOR='\033[0;31m'
+SUCCESS_COLOR='\033[0;32m'
+WARNING_COLOR='\033[1;33m'
+INFO_COLOR='\033[0;34m'
+DEBUG_COLOR='\033[0;37m'
+NO_COLOR='\033[0m'
 
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Logging function
+log() {
+    local level=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+    local message="$2"
+    local color
+    
+    case $level in
+        ERROR)   color=$ERROR_COLOR ;;
+        SUCCESS) color=$SUCCESS_COLOR ;;
+        WARNING) color=$WARNING_COLOR ;;
+        INFO)    color=$INFO_COLOR ;;
+        DEBUG)   color=$DEBUG_COLOR ;;
+        *)       color=$INFO_COLOR ;;
+    esac
+    
+    echo -e "${color}${level}: ${message}${NO_COLOR}"
+}
 
-# Print colorized message
-print_message() {
-    echo -e "${1}${2}${NC}"
+# Error handling
+handle_error() {
+    log "ERROR" "$1"
+    exit 1
+}
+
+trap 'handle_error "Error occurred on line $LINENO"' ERR
+
+# Check prerequisites
+check_prerequisites() {
+    log "INFO" "Checking prerequisites..."
+    local required_tools="aws kubectl docker jq"
+    local missing_tools=()
+
+    for tool in $required_tools; do
+        if ! command -v $tool &> /dev/null; then
+            missing_tools+=($tool)
+        fi
+    done
+
+    if [ ${#missing_tools[@]} -ne 0 ]; then
+        handle_error "Missing required tools: ${missing_tools[*]}"
+    fi
+
+    log "SUCCESS" "Prerequisites check passed"
 }
 
 # Load configuration
 load_configuration() {
-    if [ ! -f .cluster-config/cluster-resources.json ]; then
-        print_message "$RED" "Cluster configuration not found. Please run create-env.sh first."
-        exit 1
+    local config_file=".cluster-config/cluster-resources.json"
+    
+    if [ ! -f "$config_file" ]; then
+        handle_error "Cluster configuration not found. Please run create-eks-env.sh first."
     fi
 
-    CLUSTER_NAME=$(jq -r '.cluster.name' .cluster-config/cluster-resources.json)
-    AWS_REGION=$(jq -r '.cluster.region' .cluster-config/cluster-resources.json)
-    AWS_ACCOUNT_ID=$(jq -r '.cluster.account_id' .cluster-config/cluster-resources.json)
+    log "INFO" "Loading configuration..."
+    
+    CLUSTER_NAME=$(jq -r '.cluster.name // empty' "$config_file")
+    AWS_REGION=$(jq -r '.cluster.region // empty' "$config_file")
+    AWS_ACCOUNT_ID=$(jq -r '.cluster.account_id // empty' "$config_file")
 
-    print_message "$GREEN" "Configuration loaded: Cluster=${CLUSTER_NAME}, Region=${AWS_REGION}"
+    if [[ -z $CLUSTER_NAME || -z $AWS_REGION || -z $AWS_ACCOUNT_ID ]]; then
+        handle_error "Invalid configuration in $config_file"
+    fi
+
+    log "SUCCESS" "Configuration loaded successfully"
+    log "INFO" "Cluster: $CLUSTER_NAME"
+    log "INFO" "Region: $AWS_REGION"
 }
 
 # Remove Kubernetes resources
 remove_k8s_resources() {
-    print_message "$YELLOW" "Starting Kubernetes resource cleanup..."
+    log "INFO" "Starting Kubernetes resource cleanup..."
 
-    # First, delete deployments and services
-    print_message "$YELLOW" "Removing deployments and services..."
+    # Delete deployments and services
+    log "INFO" "Removing deployments and services..."
     kubectl delete deployment dotnet-cart-api dotnet-delivery-api --ignore-not-found=true
     kubectl delete service cart-api-service delivery-api-service --ignore-not-found=true
+    log "SUCCESS" "Deployments and services removed"
 
     # Get ingress details before deletion
     local alb_hostname=$(kubectl get ingress apps-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
     
     # Delete ingress with timeout
     if [ -n "$alb_hostname" ]; then
-        print_message "$YELLOW" "Deleting ALB ingress (this might take a few minutes)..."
+        log "INFO" "Deleting ALB ingress (this might take a few minutes)..."
         kubectl delete ingress apps-ingress --ignore-not-found=true
-        print_message "$YELLOW" "ALB ($alb_hostname) deletion initiated"
+        log "INFO" "ALB ($alb_hostname) deletion initiated"
+    else
+        log "INFO" "No ALB ingress found"
     fi
 
-    print_message "$GREEN" "Kubernetes resources removal initiated"
-    print_message "$YELLOW" "Note: ALB deletion will continue in the background"
+    log "SUCCESS" "Kubernetes resources removal completed"
 }
 
 # Remove ECR repositories
 remove_ecr_repos() {
-    print_message "$YELLOW" "Removing ECR repositories..."
+    log "INFO" "Removing ECR repositories..."
     
     for repo in "simple-cart-api" "simple-delivery-api"; do
+        log "INFO" "Removing repository: $repo"
         aws ecr delete-repository \
             --repository-name "$repo" \
             --force \
@@ -62,12 +115,12 @@ remove_ecr_repos() {
             --no-cli-pager 2>/dev/null || true
     done
     
-    print_message "$GREEN" "ECR repositories removed"
+    log "SUCCESS" "ECR repositories removed"
 }
 
 # Remove local Docker images
 remove_docker_images() {
-    print_message "$YELLOW" "Removing local Docker images..."
+    log "INFO" "Removing local Docker images..."
     
     # Remove specific images
     local ecr_url="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
@@ -76,43 +129,58 @@ remove_docker_images() {
         "$ecr_url/simple-delivery-api:latest" 2>/dev/null || true
     
     # Clean up build cache
+    log "INFO" "Cleaning Docker build cache..."
     docker builder prune -f >/dev/null 2>&1 || true
     
-    print_message "$GREEN" "Local Docker images cleaned up"
+    log "SUCCESS" "Local Docker images cleaned up"
 }
 
 # Remove local files
 remove_local_files() {
-    print_message "$YELLOW" "Removing local files..."
+    log "INFO" "Removing local files..."
     rm -rf kubernetes *.tmp
-    print_message "$GREEN" "Local files removed"
+    log "SUCCESS" "Local files removed"
+}
+
+# Confirm cleanup
+confirm_cleanup() {
+    log "WARNING" "This will remove all application resources and local files."
+    log "WARNING" "This action cannot be undone!"
+    log "WARNING" "Are you sure you want to continue? (y/N)"
+    
+    read -r response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        log "INFO" "Cleanup cancelled"
+        exit 0
+    fi
 }
 
 # Print cleanup summary
 print_summary() {
-    print_message "$GREEN" "\n=== Cleanup Summary ==="
-    print_message "$GREEN" "✓ Kubernetes deployments and services removed"
-    print_message "$GREEN" "✓ ALB ingress deletion initiated"
-    print_message "$GREEN" "✓ ECR repositories removed"
-    print_message "$GREEN" "✓ Local Docker images cleaned"
-    print_message "$GREEN" "✓ Local files removed"
-    print_message "$YELLOW" "\nNote: The ALB deletion may take a few minutes to complete in AWS."
-    print_message "$YELLOW" "You can check the status in AWS Console → EC2 → Load Balancers."
+    log "SUCCESS" "\n====================================="
+    log "SUCCESS" "Cleanup Summary"
+    log "SUCCESS" "====================================="
+    log "INFO" "The following items were cleaned up:"
+    log "INFO" "✓ Kubernetes deployments and services"
+    log "INFO" "✓ ALB ingress"
+    log "INFO" "✓ ECR repositories"
+    log "INFO" "✓ Local Docker images"
+    log "INFO" "✓ Local files"
+    log "WARNING" "\nNote: ALB deletion may take a few minutes to complete in AWS."
+    log "WARNING" "You can check the status in AWS Console → EC2 → Load Balancers."
 }
 
-# Main cleanup function
-main() {
-    print_message "$YELLOW" "Starting cleanup process..."
-    
-    load_configuration
-    remove_k8s_resources
-    remove_ecr_repos
-    remove_docker_images
-    remove_local_files
-    print_summary
-    
-    print_message "$GREEN" "Cleanup completed successfully"
-}
+# Main execution
+log "INFO" "Starting application cleanup process..."
 
-# Run main function
-main
+check_prerequisites
+load_configuration
+confirm_cleanup
+
+remove_k8s_resources
+remove_ecr_repos
+remove_docker_images
+remove_local_files
+
+print_summary
+log "SUCCESS" "Cleanup completed successfully"

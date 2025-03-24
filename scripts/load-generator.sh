@@ -1,13 +1,16 @@
 #!/bin/bash
+set -eo pipefail
 
-# Colors for console output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Log levels and colors
+ERROR_COLOR='\033[0;31m'
+SUCCESS_COLOR='\033[0;32m'
+WARNING_COLOR='\033[1;33m'
+INFO_COLOR='\033[0;34m'
+DEBUG_COLOR='\033[0;37m'
+NO_COLOR='\033[0m'
 
 # Initialize global variables
-BATCH_SIZE=${BATCH_SIZE:-10}
+BATCH_SIZE=${BATCH_SIZE:-5}
 CART_API_URL=""
 STATS_INTERVAL=${STATS_INTERVAL:-60}
 METRICS_FILE="/tmp/load_test_metrics.txt"
@@ -15,91 +18,118 @@ METRICS_FILE="/tmp/load_test_metrics.txt"
 # Clear metrics file
 > "$METRICS_FILE"
 
-# Print colorized message
-print_message() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
+# Logging function
+log() {
+    local level=$(echo "$1" | tr '[:lower:]' '[:upper:]')
+    local message="$2"
+    local color
+    
+    case $level in
+        ERROR)   color=$ERROR_COLOR ;;
+        SUCCESS) color=$SUCCESS_COLOR ;;
+        WARNING) color=$WARNING_COLOR ;;
+        INFO)    color=$INFO_COLOR ;;
+        DEBUG)   color=$DEBUG_COLOR ;;
+        *)       color=$INFO_COLOR ;;
+    esac
+    
+    echo -e "${color}${level}: ${message}${NO_COLOR}"
+}
+
+# Error handling
+handle_error() {
+    log "ERROR" "$1"
+    exit 1
+}
+
+trap 'handle_error "Error occurred on line $LINENO"' ERR
+
+# Check prerequisites
+check_prerequisites() {
+    log "INFO" "Checking prerequisites..."
+    local required_tools="kubectl curl bc uuidgen"
+    local missing_tools=()
+
+    for tool in $required_tools; do
+        if ! command -v $tool &> /dev/null; then
+            missing_tools+=($tool)
+        fi
+    done
+
+    if [ ${#missing_tools[@]} -ne 0 ]; then
+        handle_error "Missing required tools: ${missing_tools[*]}"
+    fi
+
+    log "SUCCESS" "Prerequisites check passed"
 }
 
 # Check ALB health
 check_alb_health() {
     if ! curl -s -f "http://${CART_API_URL}/apps/cart/healthz" &>/dev/null; then
-        print_message "$RED" "ALB health check failed"
+        log "ERROR" "ALB health check failed"
         return 1
     fi
+    log "DEBUG" "ALB health check passed"
     return 0
 }
 
 # Verify ingress configuration
 verify_ingress() {
+    log "INFO" "Verifying ingress configuration..."
+
     if ! kubectl get ingress apps-ingress &>/dev/null; then
-        print_message "$RED" "Ingress 'apps-ingress' not found"
-        exit 1
+        handle_error "Ingress 'apps-ingress' not found"
     fi
 
-    # Check ingressClassName instead of annotation
     local ingress_class=$(kubectl get ingress apps-ingress -o jsonpath='{.spec.ingressClassName}')
     if [ "$ingress_class" != "alb" ]; then
-        print_message "$RED" "Ingress is not configured to use ALB"
-        exit 1
+        handle_error "Ingress is not configured to use ALB"
     fi
 
-    # Wait for ALB address to be assigned
-    print_message "$YELLOW" "Waiting for ALB address..."
+    log "INFO" "Waiting for ALB address..."
     local max_attempts=12
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
         ALB_ADDRESS=$(kubectl get ingress apps-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
         if [ -n "$ALB_ADDRESS" ]; then
-            print_message "$GREEN" "ALB address found: $ALB_ADDRESS"
+            log "SUCCESS" "ALB address found: $ALB_ADDRESS"
             return 0
         fi
-        print_message "$YELLOW" "Waiting for ALB address... (Attempt $attempt/$max_attempts)"
+        log "INFO" "Waiting for ALB address... (Attempt $attempt/$max_attempts)"
         sleep 5
         ((attempt++))
     done
 
-    print_message "$RED" "Timed out waiting for ALB address"
-    exit 1
+    handle_error "Timed out waiting for ALB address"
 }
 
-
 get_cart_api_url() {
-    print_message "$YELLOW" "Getting Cart API URL..."
+    log "INFO" "Getting Cart API URL..."
     
-    if ! command -v kubectl &> /dev/null; then
-        print_message "$RED" "kubectl is required but not installed"
-        exit 1
-    fi
-
     CART_API_URL=$(kubectl get ingress apps-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
     
     if [ -z "$CART_API_URL" ]; then
-        print_message "$RED" "Failed to get ALB URL. Is the ingress controller running?"
-        exit 1
+        handle_error "Failed to get ALB URL. Is the ingress controller running?"
     fi
 
-    # Test the endpoint
-    print_message "$YELLOW" "Testing ALB endpoint..."
+    log "INFO" "Testing ALB endpoint..."
     if curl -s -f "http://${CART_API_URL}/apps/cart/healthz" &>/dev/null; then
-        print_message "$GREEN" "ALB endpoint is accessible"
+        log "SUCCESS" "ALB endpoint is accessible"
     else
-        print_message "$YELLOW" "Waiting for ALB endpoint to become available..."
+        log "WARNING" "Waiting for ALB endpoint to become available..."
         sleep 10
     fi
 
-    print_message "$GREEN" "ALB URL: $CART_API_URL"
+    log "SUCCESS" "Cart API URL: $CART_API_URL"
 }
-
 
 # Send HTTP request
 send_request() {
     local id=$1
     local start_time=$(date +%s.%N)
     
-    # Generate cart ID and item ID
+    # Generate IDs
     local cart_id=$(uuidgen)
     local item_id=$(uuidgen)
     local product_id=$(uuidgen)
@@ -148,15 +178,13 @@ send_request() {
     local end_time=$(date +%s.%N)
     local duration=$(echo "$end_time - $start_time" | bc)
     
-    # Track metrics with minimal error reporting
     if [ "$success" = true ]; then
         echo "$id,$duration,$(date +%s),$http_code" >> "$METRICS_FILE"
-        print_message "$GREEN" "Request $id successful: $http_code (duration: ${duration}s)"
+        log "DEBUG" "Request $id successful: $http_code (duration: ${duration}s)"
     else
-        print_message "$RED" "Request $id failed with status $http_code (after $retry retries). Check CloudWatch App Signals for details."
+        log "ERROR" "Request $id failed with status $http_code (after $retry retries)"
     fi
 }
-
 
 # Print statistics
 print_statistics() {
@@ -181,18 +209,17 @@ print_statistics() {
         local requests_per_second=$(echo "scale=2; $window_requests / $STATS_INTERVAL" | bc)
         local success_rate=$(echo "scale=2; $successful_requests * 100 / $window_requests" | bc)
         
-        print_message "$GREEN" "\nLast ${STATS_INTERVAL} seconds statistics:"
-        print_message "$GREEN" "Total Requests: $window_requests"
-        print_message "$GREEN" "Successful Requests: $successful_requests"
-        print_message "$GREEN" "Success Rate: ${success_rate}%"
-        print_message "$GREEN" "Requests/second: $requests_per_second"
-        print_message "$GREEN" "Average Response Time: ${avg_response_time}s"
+        log "SUCCESS" "\n=== Performance Statistics (Last ${STATS_INTERVAL}s) ==="
+        log "INFO" "Total Requests: $window_requests"
+        log "INFO" "Successful Requests: $successful_requests"
+        log "INFO" "Success Rate: ${success_rate}%"
+        log "INFO" "Requests/second: $requests_per_second"
+        log "INFO" "Average Response Time: ${avg_response_time}s"
 
-        # Add ALB status check
         if check_alb_health; then
-            print_message "$GREEN" "ALB Status: Healthy"
+            log "SUCCESS" "ALB Status: Healthy"
         else
-            print_message "$YELLOW" "ALB Status: Degraded"
+            log "WARNING" "ALB Status: Degraded"
         fi
     fi
     
@@ -206,13 +233,22 @@ print_statistics() {
     mv "$tmp_file" "$METRICS_FILE"
 }
 
+# Cleanup handler
+cleanup() {
+    log "WARNING" "\nLoad test stopped"
+    print_statistics
+    log "INFO" "Final results saved to: $METRICS_FILE"
+    exit 0
+}
+
 # Main execution
 main() {
-    print_message "$YELLOW" "Starting load generator..."
-    print_message "$YELLOW" "Batch size: $BATCH_SIZE requests"
-    print_message "$YELLOW" "Stats interval: $STATS_INTERVAL seconds"
-    print_message "$YELLOW" "Auto-retry: 3 attempts"
+    log "INFO" "Starting load test with the following parameters:"
+    log "INFO" "- Batch size: $BATCH_SIZE requests"
+    log "INFO" "- Stats interval: $STATS_INTERVAL seconds"
+    log "INFO" "- Auto-retry: 3 attempts"
 
+    check_prerequisites
     verify_ingress
     get_cart_api_url
 
@@ -221,7 +257,7 @@ main() {
     last_stats_time=$SECONDS
     last_health_check=$SECONDS
 
-    print_message "$GREEN" "Load test starting. Press Ctrl+C to stop."
+    log "SUCCESS" "Load test starting. Press Ctrl+C to stop."
 
     while true; do
         current_time=$SECONDS
@@ -229,7 +265,7 @@ main() {
         # Periodic health check
         if ((current_time - last_health_check >= 30)); then
             if ! check_alb_health; then
-                print_message "$RED" "ALB health check failed, waiting for recovery..."
+                log "WARNING" "ALB health check failed, waiting for recovery..."
                 sleep 5
                 continue
             fi
@@ -250,14 +286,6 @@ main() {
         
         sleep 1
     done
-}
-
-# Handle script interruption
-cleanup() {
-    print_message "$YELLOW" "\nLoad test stopped."
-    print_statistics
-    print_message "$GREEN" "Final results saved to: $METRICS_FILE"
-    exit 0
 }
 
 trap cleanup SIGINT SIGTERM
