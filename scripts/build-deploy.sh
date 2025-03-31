@@ -229,7 +229,7 @@ spec:
         - name: ASPNETCORE_URLS
           value: "http://+:8080"
         - name: BACKEND_URL
-          value: "http://delivery-api-service:8080"
+          value: "http://dotnet-delivery-api"
         - name: AWS_REGION
           value: "${AWS_REGION}"
         - name: DYNAMODB_TABLE_NAME
@@ -253,7 +253,7 @@ EOF
 apiVersion: v1
 kind: Service
 metadata:
-  name: cart-api-service
+  name: dotnet-cart-api
 spec:
   selector:
     app: dotnet-cart-api
@@ -270,14 +270,14 @@ EOF
 apiVersion: v1
 kind: Service
 metadata:
-  name: delivery-api-service
+  name: dotnet-delivery-api
 spec:
   selector:
     app: dotnet-delivery-api
   ports:
     - name: http-8080
       protocol: TCP
-      port: 8080
+      port: 80
       targetPort: 8080
   type: ClusterIP
 EOF
@@ -300,16 +300,16 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: cart-api-service
+            name: dotnet-cart-api
             port:
               number: 8080
       - path: /apps/delivery
         pathType: Prefix
         backend:
           service:
-            name: delivery-api-service
+            name: dotnet-delivery-api
             port:
-              number: 8080
+              number: 80
 EOF
 
     log "SUCCESS" "Kubernetes deployment files created"
@@ -329,18 +329,42 @@ restart_deployments() {
 }
 
 # Deploy to Kubernetes
+# Deploy to Kubernetes
 deploy_to_k8s() {
     log "INFO" "Deploying to Kubernetes..."
     
-    kubectl apply -f kubernetes/cart-deployment.yaml
-    kubectl apply -f kubernetes/delivery-deployment.yaml
-    kubectl apply -f kubernetes/cart-service.yaml
-    kubectl apply -f kubernetes/delivery-service.yaml
-    kubectl apply -f kubernetes/ingress.yaml
+    # Delete existing deployments and wait for complete removal
+    log "INFO" "Removing existing deployments..."
+    kubectl delete deployment dotnet-cart-api dotnet-delivery-api --ignore-not-found=true
+    kubectl delete service dotnet-cart-api dotnet-delivery-api --ignore-not-found=true
     
-    restart_deployments
+    # Wait for resources to be fully deleted
+    log "INFO" "Waiting for resources to be removed..."
+    while true; do
+        if ! kubectl get deployment dotnet-cart-api 2>/dev/null && \
+           ! kubectl get deployment dotnet-delivery-api 2>/dev/null && \
+           ! kubectl get service dotnet-cart-api 2>/dev/null && \
+           ! kubectl get service dotnet-delivery-api 2>/dev/null; then
+            break
+        fi
+        log "INFO" "Waiting for resources to be removed..."
+        sleep 5
+    done
+    
+    log "SUCCESS" "Existing resources removed"
+    
+    # Apply all configurations at once
+    log "INFO" "Applying configurations..."
+    kubectl apply -f kubernetes/
+    
+    # Wait for deployments to be ready
+    log "INFO" "Waiting for deployments to be ready..."
+    kubectl rollout status deployment/dotnet-cart-api
+    kubectl rollout status deployment/dotnet-delivery-api
+    
     log "SUCCESS" "Kubernetes deployments completed"
 }
+
 
 # Verify deployment
 verify_deployment() {
@@ -496,6 +520,25 @@ deploy_applications() {
     deploy_to_k8s
     verify_deployment
     print_deployment_summary
+
+
+
+   # Add delay before deploying traffic generator
+    log "INFO" "Waiting 10 seconds for ALB to be fully available..."
+    sleep 10
+    
+    # Deploy traffic generator
+    log "INFO" "Deploying traffic generator..."
+    if ! (cd ./scripts/traffic-generator && ./deploy.sh); then
+        log "WARNING" "Traffic generator deployment failed"
+        return 1
+    fi
+    
+    # Show traffic generator status
+    log "INFO" "Traffic Generator Status:"
+    kubectl get pods -l app=traffic-generator -o wide
+    log "INFO" "To view traffic generator logs:"
+    log "INFO" "kubectl logs -f deployment/traffic-generator" 
 }
 
 # Cleanup handler

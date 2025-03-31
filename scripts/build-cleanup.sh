@@ -83,7 +83,7 @@ remove_k8s_resources() {
 
     # Delete deployments and services
     log "INFO" "Removing deployments and services..."
-    kubectl delete deployment dotnet-cart-api dotnet-delivery-api --ignore-not-found=true
+    kubectl delete deployment dotnet-cart-api dotnet-delivery-api traffic-generator --ignore-not-found=true
     kubectl delete service cart-api-service delivery-api-service --ignore-not-found=true
     log "SUCCESS" "Deployments and services removed"
 
@@ -106,7 +106,7 @@ remove_k8s_resources() {
 remove_ecr_repos() {
     log "INFO" "Removing ECR repositories..."
     
-    for repo in "simple-cart-api" "simple-delivery-api"; do
+    for repo in "simple-cart-api" "simple-delivery-api" "traffic-generator"; do
         log "INFO" "Removing repository: $repo"
         aws ecr delete-repository \
             --repository-name "$repo" \
@@ -126,6 +126,7 @@ remove_docker_images() {
     local ecr_url="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
     docker image rm -f \
         "$ecr_url/simple-cart-api:latest" \
+        "$ecr_url/trafic-generator:latest"
         "$ecr_url/simple-delivery-api:latest" 2>/dev/null || true
     
     # Clean up build cache
