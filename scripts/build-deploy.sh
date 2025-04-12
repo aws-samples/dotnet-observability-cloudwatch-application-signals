@@ -535,10 +535,10 @@ deploy_applications() {
     fi
     
     # Show traffic generator status
-    log "INFO" "Traffic Generator Status:"
-    kubectl get pods -l app=traffic-generator -o wide
-    log "INFO" "To view traffic generator logs:"
-    log "INFO" "kubectl logs -f deployment/traffic-generator" 
+    #log "INFO" "Traffic Generator Status:"
+    #kubectl get pods -l app=traffic-generator -o wide
+    #log "INFO" "To view traffic generator logs:"
+    #log "INFO" "kubectl logs -f deployment/traffic-generator" 
 }
 
 # Cleanup handler
